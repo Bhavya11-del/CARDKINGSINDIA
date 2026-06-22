@@ -1,0 +1,222 @@
+// ============================================================
+// AI BOT SYSTEM — Works for all 3 games
+// ============================================================
+
+import { Card, Suit, RANK_ORDER, SUITS } from '../cards/deck';
+import { TeenPattiState, TeenPattiAction, evaluateHand } from '../games/teen-patti/engine';
+import { CallBreakState, TRUMP_SUIT } from '../games/call-break/engine';
+import { MendicotState } from '../games/mendicot/engine';
+
+export type BotDifficulty = 'easy' | 'medium' | 'hard';
+
+// ===================== TEEN PATTI BOT =====================
+
+export function getTeenPattiBotAction(
+  state: TeenPattiState,
+  botId: string,
+  difficulty: BotDifficulty
+): TeenPattiAction {
+  const player = state.players.find(p => p.id === botId);
+  if (!player) return { type: 'fold', playerId: botId };
+
+  const isSeen = player.status === 'seen';
+  const callAmount = isSeen ? state.currentStake * 2 : state.currentStake;
+
+  if (difficulty === 'easy') {
+    return easyTeenPattiAction(player, botId, callAmount, state);
+  } else if (difficulty === 'medium') {
+    return mediumTeenPattiAction(player, botId, callAmount, state, isSeen);
+  } else {
+    return hardTeenPattiAction(player, botId, callAmount, state, isSeen);
+  }
+}
+
+function easyTeenPattiAction(player: any, botId: string, callAmount: number, state: TeenPattiState): TeenPattiAction {
+  const rand = Math.random();
+  if (!player.cards.length) return { type: 'call', playerId: botId };
+
+  // 30% fold, 60% call, 10% raise
+  if (rand < 0.3) return { type: 'fold', playerId: botId };
+  if (rand < 0.9) return { type: 'call', playerId: botId };
+  return { type: 'raise', playerId: botId, amount: callAmount * 2 };
+}
+
+function mediumTeenPattiAction(player: any, botId: string, callAmount: number, state: TeenPattiState, isSeen: boolean): TeenPattiAction {
+  // See cards first if blind and pot is large
+  if (!isSeen && state.pot > state.bootAmount * 6 && Math.random() > 0.5) {
+    return { type: 'seeCards', playerId: botId };
+  }
+
+  if (!isSeen) {
+    // Stay blind: 70% call, 20% raise, 10% fold
+    const rand = Math.random();
+    if (rand < 0.1) return { type: 'fold', playerId: botId };
+    if (rand < 0.8) return { type: 'call', playerId: botId };
+    return { type: 'raise', playerId: botId, amount: callAmount * 2 };
+  }
+
+  const { rank } = evaluateHand(player.cards);
+  const handStrength = { trail: 1, pureSequence: 0.9, sequence: 0.7, color: 0.6, pair: 0.45, highCard: 0.2 }[rank];
+
+  if (handStrength < 0.3) return { type: 'fold', playerId: botId };
+  if (handStrength > 0.7 && Math.random() > 0.4) return { type: 'raise', playerId: botId, amount: callAmount * 2 };
+  return { type: 'call', playerId: botId };
+}
+
+function hardTeenPattiAction(player: any, botId: string, callAmount: number, state: TeenPattiState, isSeen: boolean): TeenPattiAction {
+  const activePlayers = state.players.filter(p => p.status !== 'packed').length;
+
+  // See cards when there are few active players
+  if (!isSeen && activePlayers <= 3) {
+    return { type: 'seeCards', playerId: botId };
+  }
+
+  if (!isSeen) {
+    if (player.chips < callAmount * 2) return { type: 'fold', playerId: botId };
+    return Math.random() < 0.8 ? { type: 'call', playerId: botId } : { type: 'raise', playerId: botId, amount: callAmount * 2 };
+  }
+
+  const { rank } = evaluateHand(player.cards);
+  const potOdds = callAmount / state.pot;
+  const handStrength = { trail: 0.98, pureSequence: 0.85, sequence: 0.65, color: 0.55, pair: 0.40, highCard: 0.15 }[rank];
+
+  if (handStrength < potOdds * 1.5) return { type: 'fold', playerId: botId };
+
+  // Bluff 10% of the time with weak hand
+  if (handStrength < 0.3 && Math.random() < 0.10) {
+    return { type: 'raise', playerId: botId, amount: callAmount * 3 };
+  }
+
+  // Strong hand: raise, medium: call
+  if (handStrength > 0.7) return { type: 'raise', playerId: botId, amount: callAmount * 2 };
+  if (handStrength > 0.4) return { type: 'call', playerId: botId };
+
+  return { type: 'fold', playerId: botId };
+}
+
+// ===================== CALL BREAK BOT =====================
+
+export function getCallBreakBotBid(cards: Card[], difficulty: BotDifficulty): number {
+  if (difficulty === 'easy') {
+    return Math.max(1, Math.floor(Math.random() * 5) + 1);
+  }
+
+  const trumps = cards.filter(c => c.suit === TRUMP_SUIT);
+  const highCards = cards.filter(c => ['A', 'K', 'Q'].includes(c.rank));
+  let estimate = trumps.length + Math.floor(highCards.length * 0.6);
+
+  if (difficulty === 'medium') estimate = Math.max(1, estimate + (Math.random() > 0.5 ? 1 : -1));
+  else estimate = Math.max(1, estimate); // hard: accurate
+
+  return Math.min(13, Math.max(1, estimate));
+}
+
+export function getCallBreakBotCard(state: CallBreakState, botId: string, difficulty: BotDifficulty): Card | null {
+  const player = state.players.find(p => p.id === botId);
+  if (!player || player.cards.length === 0) return null;
+
+  const leadSuit = state.currentTrick.leadSuit;
+  const suitCards = leadSuit ? player.cards.filter(c => c.suit === leadSuit) : [];
+  const trumpCards = player.cards.filter(c => c.suit === TRUMP_SUIT);
+  const validCards = suitCards.length > 0 ? suitCards : player.cards;
+
+  if (difficulty === 'easy') {
+    return validCards[Math.floor(Math.random() * validCards.length)];
+  }
+
+  // Try to win the trick
+  const currentWinner = getCurrentTrickWinner(state);
+
+  if (difficulty === 'medium') {
+    if (suitCards.length > 0) {
+      // Play highest card to try to win
+      return suitCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
+    }
+    // Can't follow suit — play a trump if available
+    if (trumpCards.length > 0) return trumpCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+    return player.cards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+  }
+
+  // Hard: strategic play
+  if (suitCards.length > 0) {
+    const winningCard = suitCards.find(c => !currentWinner || RANK_ORDER[c.rank] > RANK_ORDER[currentWinner.rank]);
+    if (winningCard) return winningCard;
+    return suitCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0]; // dump lowest
+  }
+
+  if (trumpCards.length > 0 && trumpCards.length > 3) {
+    return trumpCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0]; // play lowest trump
+  }
+
+  return player.cards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+}
+
+function getCurrentTrickWinner(state: CallBreakState): Card | null {
+  if (!state.currentTrick.cards.length) return null;
+  const leadSuit = state.currentTrick.leadSuit!;
+  let best = state.currentTrick.cards[0].card;
+  for (const entry of state.currentTrick.cards.slice(1)) {
+    const c = entry.card;
+    const bIsTrump = best.suit === TRUMP_SUIT;
+    const cIsTrump = c.suit === TRUMP_SUIT;
+    if (cIsTrump && !bIsTrump) { best = c; continue; }
+    if (!cIsTrump && bIsTrump) continue;
+    if (c.suit === best.suit && RANK_ORDER[c.rank] > RANK_ORDER[best.rank]) best = c;
+  }
+  return best;
+}
+
+// ===================== MENDICOT BOT =====================
+
+export function getMendicotBotCard(state: MendicotState, botId: string, difficulty: BotDifficulty): Card | null {
+  const player = state.players.find(p => p.id === botId);
+  if (!player || player.cards.length === 0) return null;
+
+  const leadSuit = state.currentTrick.leadSuit;
+  const suitCards = leadSuit ? player.cards.filter(c => c.suit === leadSuit) : [];
+  const trump = state.trumpSuit;
+  const trumpCards = trump ? player.cards.filter(c => c.suit === trump) : [];
+
+  if (difficulty === 'easy') {
+    const valid = suitCards.length > 0 ? suitCards : player.cards;
+    return valid[Math.floor(Math.random() * valid.length)];
+  }
+
+  if (difficulty === 'medium') {
+    if (suitCards.length > 0) {
+      return suitCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
+    }
+    if (trumpCards.length > 0) return trumpCards[0];
+    return player.cards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+  }
+
+  // Hard: prioritize winning tricks with 10s, protect own 10s
+  const hasTens = player.cards.some(c => c.rank === '10');
+
+  if (suitCards.length > 0) {
+    // If we have the 10 of lead suit and it can win, play it
+    const ten = suitCards.find(c => c.rank === '10');
+    if (ten && canWinTrick(state, ten)) return ten;
+    const highCard = suitCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
+    return highCard;
+  }
+
+  if (trumpCards.length > 0 && hasTens) {
+    return trumpCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+  }
+
+  return player.cards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+}
+
+function canWinTrick(state: MendicotState, card: Card): boolean {
+  if (!state.currentTrick.cards.length) return true;
+  const trump = state.trumpSuit;
+  for (const entry of state.currentTrick.cards) {
+    const c = entry.card;
+    const cIsTrump = trump && c.suit === trump;
+    const myIsTrump = trump && card.suit === trump;
+    if (cIsTrump && !myIsTrump) return false;
+    if (c.suit === card.suit && RANK_ORDER[c.rank] >= RANK_ORDER[card.rank]) return false;
+  }
+  return true;
+}

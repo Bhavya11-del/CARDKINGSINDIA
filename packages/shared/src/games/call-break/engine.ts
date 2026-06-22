@@ -1,0 +1,209 @@
+// ============================================================
+// CALL BREAK GAME ENGINE
+// ============================================================
+
+import { Card, Suit, RANK_ORDER, createDeck, shuffleDeck } from '../../cards/deck';
+
+export type CallBreakPhase = 'WAITING' | 'DEAL' | 'BIDDING' | 'TRICK_PLAY' | 'SCORING' | 'GAME_OVER';
+export const TRUMP_SUIT: Suit = 'spades';
+
+export interface CallBreakPlayer {
+  id: string;
+  name: string;
+  cards: Card[];
+  bid: number;
+  tricksWon: number;
+  score: number;
+  totalScore: number;
+  isBot: boolean;
+  botDifficulty?: 'easy' | 'medium' | 'hard';
+  avatar?: string;
+}
+
+export interface Trick {
+  cards: { playerId: string; card: Card }[];
+  leadSuit: Suit | null;
+  winnerId?: string;
+}
+
+export interface CallBreakState {
+  phase: CallBreakPhase;
+  players: CallBreakPlayer[];
+  currentTrick: Trick;
+  completedTricks: Trick[];
+  currentPlayerIndex: number;
+  dealerIndex: number;
+  currentRound: number;
+  totalRounds: number;
+  biddingPlayerIndex: number;
+  lastAction?: string;
+}
+
+export function initCallBreak(players: Omit<CallBreakPlayer, 'cards' | 'bid' | 'tricksWon' | 'score' | 'totalScore'>[], totalRounds = 5): CallBreakState {
+  return {
+    phase: 'WAITING',
+    players: players.map(p => ({ ...p, cards: [], bid: 0, tricksWon: 0, score: 0, totalScore: 0 })),
+    currentTrick: { cards: [], leadSuit: null },
+    completedTricks: [],
+    currentPlayerIndex: 0,
+    dealerIndex: 0,
+    currentRound: 1,
+    totalRounds,
+    biddingPlayerIndex: 0,
+  };
+}
+
+export function dealCallBreak(state: CallBreakState): CallBreakState {
+  const deck = shuffleDeck(createDeck());
+  const players = state.players.map((p, i) => ({
+    ...p,
+    cards: deck.slice(i * 13, i * 13 + 13).sort((a, b) => {
+      if (a.suit === b.suit) return RANK_ORDER[b.rank] - RANK_ORDER[a.rank];
+      return a.suit.localeCompare(b.suit);
+    }),
+    bid: 0,
+    tricksWon: 0,
+    score: 0,
+  }));
+
+  return {
+    ...state,
+    phase: 'BIDDING',
+    players,
+    currentTrick: { cards: [], leadSuit: null },
+    completedTricks: [],
+    biddingPlayerIndex: (state.dealerIndex + 1) % 4,
+  };
+}
+
+export function placeBid(state: CallBreakState, playerId: string, bid: number): CallBreakState {
+  if (bid < 1 || bid > 13) return state;
+  const players = state.players.map(p =>
+    p.id === playerId ? { ...p, bid } : p
+  );
+  const nextBiddingIdx = (state.biddingPlayerIndex + 1) % 4;
+  const allBid = players.every(p => p.bid > 0);
+
+  return {
+    ...state,
+    players,
+    biddingPlayerIndex: nextBiddingIdx,
+    phase: allBid ? 'TRICK_PLAY' : 'BIDDING',
+    currentPlayerIndex: allBid ? (state.dealerIndex + 1) % 4 : state.biddingPlayerIndex,
+    lastAction: `${players.find(p => p.id === playerId)?.name} bid ${bid}`,
+  };
+}
+
+export function playCard(state: CallBreakState, playerId: string, card: Card): CallBreakState {
+  const playerIdx = state.players.findIndex(p => p.id === playerId);
+  if (playerIdx === -1 || playerIdx !== state.currentPlayerIndex) return state;
+
+  const player = state.players[playerIdx];
+  if (!player.cards.find(c => c.id === card.id)) return state;
+
+  // Validate: must follow suit if possible
+  const leadSuit = state.currentTrick.leadSuit;
+  if (leadSuit && card.suit !== leadSuit && card.suit !== TRUMP_SUIT) {
+    const hasSuit = player.cards.some(c => c.suit === leadSuit);
+    if (hasSuit) return state; // Invalid move
+  }
+
+  const newTrickCards = [...state.currentTrick.cards, { playerId, card }];
+  const newLeadSuit = state.currentTrick.leadSuit || card.suit;
+  const updatedPlayers = state.players.map((p, i) =>
+    i === playerIdx ? { ...p, cards: p.cards.filter(c => c.id !== card.id) } : p
+  );
+
+  const newState: CallBreakState = {
+    ...state,
+    players: updatedPlayers,
+    currentTrick: { cards: newTrickCards, leadSuit: newLeadSuit },
+    lastAction: `${player.name} played ${card.rank} of ${card.suit}`,
+  };
+
+  if (newTrickCards.length === 4) {
+    return resolveTrick(newState);
+  }
+
+  newState.currentPlayerIndex = (state.currentPlayerIndex + 1) % 4;
+  return newState;
+}
+
+function resolveTrick(state: CallBreakState): CallBreakState {
+  const trick = state.currentTrick;
+  const leadSuit = trick.leadSuit!;
+
+  let winnerEntry = trick.cards[0];
+  for (const entry of trick.cards.slice(1)) {
+    if (winsOver(entry.card, winnerEntry.card, leadSuit)) {
+      winnerEntry = entry;
+    }
+  }
+
+  const winnerId = winnerEntry.playerId;
+  const completedTrick = { ...trick, winnerId };
+  const updatedPlayers = state.players.map(p =>
+    p.id === winnerId ? { ...p, tricksWon: p.tricksWon + 1 } : p
+  );
+
+  const allTricksPlayed = updatedPlayers[0].cards.length === 0;
+
+  if (allTricksPlayed) {
+    return scoreRound({
+      ...state,
+      players: updatedPlayers,
+      completedTricks: [...state.completedTricks, completedTrick],
+      currentTrick: { cards: [], leadSuit: null },
+    });
+  }
+
+  const winnerIdx = state.players.findIndex(p => p.id === winnerId);
+  return {
+    ...state,
+    players: updatedPlayers,
+    completedTricks: [...state.completedTricks, completedTrick],
+    currentTrick: { cards: [], leadSuit: null },
+    currentPlayerIndex: winnerIdx,
+    lastAction: `${updatedPlayers.find(p => p.id === winnerId)?.name} wins trick`,
+  };
+}
+
+function winsOver(challenger: Card, current: Card, leadSuit: Suit): boolean {
+  const challengerIsTrump = challenger.suit === TRUMP_SUIT;
+  const currentIsTrump = current.suit === TRUMP_SUIT;
+
+  if (challengerIsTrump && !currentIsTrump) return true;
+  if (!challengerIsTrump && currentIsTrump) return false;
+  if (challenger.suit !== current.suit) return false;
+  return RANK_ORDER[challenger.rank] > RANK_ORDER[current.rank];
+}
+
+function scoreRound(state: CallBreakState): CallBreakState {
+  const players = state.players.map(p => {
+    let roundScore: number;
+    if (p.tricksWon >= p.bid) {
+      const extra = p.tricksWon - p.bid;
+      roundScore = p.bid + extra * 0.1;
+    } else {
+      roundScore = -p.bid;
+    }
+    return { ...p, score: roundScore, totalScore: p.totalScore + roundScore };
+  });
+
+  if (state.currentRound >= state.totalRounds) {
+    return { ...state, players, phase: 'GAME_OVER' };
+  }
+
+  return {
+    ...state,
+    players,
+    phase: 'SCORING',
+    currentRound: state.currentRound + 1,
+    dealerIndex: (state.dealerIndex + 1) % 4,
+    lastAction: 'Round complete! Scores updated.',
+  };
+}
+
+export function getCallBreakWinner(state: CallBreakState): CallBreakPlayer {
+  return [...state.players].sort((a, b) => b.totalScore - a.totalScore)[0];
+}

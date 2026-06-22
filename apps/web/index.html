@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Card Kings India — Premium Indian Card Gaming Platform. Play Teen Patti, Call Break, Mendicot and more against AI or real players." />
+    <meta name="theme-color" content="#0a3d2b" />
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <title>Card Kings India 👑</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      function startGuestMode() {
+        console.log("Guest button clicked");
+        const guestUser = {
+          id: "guest_" + Date.now(),
+          username: "Guest",
+          guest: true,
+          coins: 10000,
+          level: 1
+        };
+
+        localStorage.setItem(
+          "cardsKingUser",
+          JSON.stringify(guestUser)
+        );
+
+        localStorage.setItem(
+          "showWelcome",
+          "true"
+        );
+
+        window.location.href = "lobby.html";
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        const setupGuestButton = () => {
+          const guestBtn = document.getElementById("guest-login-btn");
+          if (guestBtn && !guestBtn.dataset.bound) {
+            guestBtn.dataset.bound = "true";
+            console.log("Guest button found:", !!guestBtn);
+            guestBtn.addEventListener("click", (e) => {
+              e.preventDefault();
+              try {
+                startGuestMode();
+              } catch(err) {
+                console.error(err);
+              }
+            });
+          }
+        };
+
+        setupGuestButton();
+
+        const observer = new MutationObserver(() => {
+          setupGuestButton();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      });
+    </script>
+  </body>
+</html>
